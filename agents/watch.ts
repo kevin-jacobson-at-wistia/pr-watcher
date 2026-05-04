@@ -7,8 +7,9 @@ export const triggers = {};
 const gh = defineCommand("gh", {
   env: process.env.GH_TOKEN ? { GH_TOKEN: process.env.GH_TOKEN } : {},
 });
+const git = defineCommand("git");
 
-const EventSchema = v.union([
+const TriageEventSchema = v.union([
   v.object({
     kind: v.literal("ci_failure"),
     repo: v.string(),
@@ -37,12 +38,55 @@ const EventSchema = v.union([
   }),
 ]);
 
-const ResultSchema = v.object({
+const RebaseEventSchema = v.object({
+  kind: v.literal("branch_behind"),
+  repo: v.string(),
+  pr: v.number(),
+  headRefName: v.string(),
+  headSha: v.string(),
+  baseRefName: v.string(),
+  baseSha: v.string(),
+});
+
+const ConflictEventSchema = v.object({
+  kind: v.literal("merge_conflict"),
+  repo: v.string(),
+  pr: v.number(),
+  headRefName: v.string(),
+  headSha: v.string(),
+  baseRefName: v.string(),
+  baseSha: v.string(),
+});
+
+const EventSchema = v.union([
+  TriageEventSchema,
+  RebaseEventSchema,
+  ConflictEventSchema,
+]);
+
+const TriageResultSchema = v.object({
   skipped: v.boolean(),
   reason: v.string(),
   draft: v.nullable(v.string()),
   posted: v.boolean(),
   ciSummary: v.nullable(v.string()),
+});
+
+const ResolveResultSchema = v.object({
+  skipped: v.boolean(),
+  reason: v.string(),
+  outcome: v.picklist([
+    "rebased-and-pushed",
+    "conflicts-resolved-and-pushed",
+    "rebased-locally-not-pushed",
+    "drafted-resolution-not-pushed",
+    "could-not-resolve",
+    "no-op",
+  ]),
+  pushedSha: v.nullable(v.string()),
+  conflictedFiles: v.array(v.string()),
+  draft: v.nullable(v.string()),
+  posted: v.boolean(),
 });
 
 export default async function ({ init, payload }: FlueContext) {
@@ -54,10 +98,50 @@ export default async function ({ init, payload }: FlueContext) {
   });
   const session = await agent.session();
 
+  if (event.kind === "branch_behind") {
+    if (process.env.AUTO_REBASE !== "true") {
+      return {
+        skipped: true,
+        reason: `branch_behind detected on ${event.repo}#${event.pr} but AUTO_REBASE is not enabled`,
+        outcome: "no-op",
+        pushedSha: null,
+        conflictedFiles: [],
+        draft: null,
+        posted: false,
+      };
+    }
+    return await session.skill("resolve-pr-conflicts", {
+      args: { ...event, mode: "rebase-only" },
+      role: "pr-assistant",
+      commands: [gh, git],
+      result: ResolveResultSchema,
+    });
+  }
+
+  if (event.kind === "merge_conflict") {
+    if (process.env.RESOLVE_CONFLICTS !== "true") {
+      return {
+        skipped: true,
+        reason: `merge_conflict detected on ${event.repo}#${event.pr} but RESOLVE_CONFLICTS is not enabled`,
+        outcome: "no-op",
+        pushedSha: null,
+        conflictedFiles: [],
+        draft: null,
+        posted: false,
+      };
+    }
+    return await session.skill("resolve-pr-conflicts", {
+      args: { ...event, mode: "resolve-conflicts" },
+      role: "pr-assistant",
+      commands: [gh, git],
+      result: ResolveResultSchema,
+    });
+  }
+
   return await session.skill("triage-pr-activity", {
     args: event,
     role: "pr-assistant",
     commands: [gh],
-    result: ResultSchema,
+    result: TriageResultSchema,
   });
 }

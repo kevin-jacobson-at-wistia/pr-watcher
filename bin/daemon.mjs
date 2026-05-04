@@ -80,12 +80,21 @@ async function listOpenPRs() {
 }
 
 async function fetchPRDetail(repo, pr) {
-  const [head, comments, reviewComments] = await Promise.all([
-    gh(['pr', 'view', String(pr), '--repo', repo, '--json', 'headRefOid']),
+  const [meta, comments, reviewComments] = await Promise.all([
+    gh(['pr', 'view', String(pr), '--repo', repo, '--json', 'headRefOid,headRefName,baseRefName,baseRefOid,mergeable,mergeStateStatus']),
     gh(['api', `repos/${repo}/issues/${pr}/comments`, '--paginate']),
     gh(['api', `repos/${repo}/pulls/${pr}/comments`, '--paginate']),
   ]);
-  return { headRefOid: head.headRefOid, comments, reviewComments };
+  return {
+    headRefOid: meta.headRefOid,
+    headRefName: meta.headRefName,
+    baseRefName: meta.baseRefName,
+    baseRefOid: meta.baseRefOid,
+    mergeable: meta.mergeable,
+    mergeStateStatus: meta.mergeStateStatus,
+    comments,
+    reviewComments,
+  };
 }
 
 async function fetchChecksForSha(repo, sha) {
@@ -98,6 +107,21 @@ async function fetchChecksForSha(repo, sha) {
 
 function makeKey(kind, repo, id) {
   return `${kind}:${repo}:${id}`;
+}
+
+function eventKey(event) {
+  switch (event.kind) {
+    case 'issue_comment':
+    case 'review_comment':
+      return makeKey(event.kind, event.repo, event.commentId);
+    case 'ci_failure':
+      return makeKey(event.kind, event.repo, event.checkRunId);
+    case 'branch_behind':
+    case 'merge_conflict':
+      return makeKey(event.kind, event.repo, `${event.pr}:${event.headSha}:${event.baseSha}`);
+    default:
+      return makeKey(event.kind, event.repo, event.pr);
+  }
 }
 
 async function runAgentForEvent(event) {
@@ -146,6 +170,11 @@ function summarizeResult(event, result) {
   if (!result) return 'no result';
   const where = `${event.repo}#${event.pr}`;
   if (result.skipped) return `skipped ${event.kind} ${where} — ${result.reason}`;
+  if (event.kind === 'branch_behind' || event.kind === 'merge_conflict') {
+    const sha = result.pushedSha ? ` -> ${String(result.pushedSha).slice(0, 8)}` : '';
+    const files = result.conflictedFiles?.length ? ` (resolved ${result.conflictedFiles.length} file(s))` : '';
+    return `${event.kind} ${where}: ${result.outcome}${sha}${files}`;
+  }
   if (event.kind === 'ci_failure' && result.ciSummary) {
     return `ci summary for ${where}: ${result.ciSummary}${result.posted ? ' (posted)' : ' (dry-run)'}`;
   }
@@ -218,12 +247,41 @@ async function tick(state) {
         headSha: detail.headRefOid,
       });
     }
+
+    const mergePair = `${detail.headRefOid}:${detail.baseRefOid}`;
+    if (detail.mergeStateStatus === 'BEHIND') {
+      const key = makeKey('branch_behind', repo, `${pr.number}:${mergePair}`);
+      if (!state.handled[key]) {
+        events.push({
+          kind: 'branch_behind',
+          repo,
+          pr: pr.number,
+          headRefName: detail.headRefName,
+          headSha: detail.headRefOid,
+          baseRefName: detail.baseRefName,
+          baseSha: detail.baseRefOid,
+        });
+      }
+    } else if (detail.mergeStateStatus === 'DIRTY') {
+      const key = makeKey('merge_conflict', repo, `${pr.number}:${mergePair}`);
+      if (!state.handled[key]) {
+        events.push({
+          kind: 'merge_conflict',
+          repo,
+          pr: pr.number,
+          headRefName: detail.headRefName,
+          headSha: detail.headRefOid,
+          baseRefName: detail.baseRefName,
+          baseSha: detail.baseRefOid,
+        });
+      }
+    }
   }
 
   log.info(`${events.length} new event(s) to process`);
 
   for (const event of events) {
-    const key = makeKey(event.kind, event.repo, event.commentId ?? event.checkRunId);
+    const key = eventKey(event);
     log.info(`-> ${event.kind} ${event.repo}#${event.pr}`);
     try {
       const result = await runAgentForEvent(event);
@@ -242,7 +300,13 @@ async function tick(state) {
 async function main() {
   await mkdir(dirname(STATE_PATH), { recursive: true });
   const state = await loadState();
-  log.info(`pr-watcher started. polling every ${POLL_MS / 1000}s. POST_COMMENTS=${POST_COMMENTS} LOG_LEVEL=${LOG_LEVEL_NAME}`);
+  log.info(
+    `pr-watcher started. polling every ${POLL_MS / 1000}s. ` +
+    `POST_COMMENTS=${POST_COMMENTS} ` +
+    `AUTO_REBASE=${process.env.AUTO_REBASE === 'true'} ` +
+    `RESOLVE_CONFLICTS=${process.env.RESOLVE_CONFLICTS === 'true'} ` +
+    `LOG_LEVEL=${LOG_LEVEL_NAME}`
+  );
 
   while (true) {
     const start = Date.now();
