@@ -43,13 +43,14 @@ cp .env.example .env
 
 Edit `.env`:
 
-| var                 | what                                                                                             |
-| ------------------- | ------------------------------------------------------------------------------------------------ |
-| `GITHUB_USERNAME`   | your GitHub login (the daemon scans PRs authored by this user)                                   |
-| `GH_TOKEN`          | optional. PAT with `repo` scope. If unset, falls back to your `gh` keyring auth.                 |
-| `ANTHROPIC_API_KEY` | required, for Claude.                                                                            |
-| `POLL_INTERVAL_SEC` | seconds between scans (default 120).                                                             |
-| `POST_COMMENTS`     | `false` (default) = dry-run, replies are returned in logs only. `true` = actually post via `gh`. |
+| var                 | what                                                                                                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GITHUB_USERNAME`   | your GitHub login (the daemon scans PRs authored by this user)                                                                                                            |
+| `GH_TOKEN`          | optional. PAT with `repo` scope. If unset, falls back to your `gh` keyring auth.                                                                                          |
+| `ANTHROPIC_API_KEY` | required, for Claude.                                                                                                                                                     |
+| `POLL_INTERVAL_SEC` | seconds between scans (default 120).                                                                                                                                      |
+| `POST_COMMENTS`     | `false` (default) = dry-run, replies are returned in logs only. `true` = actually post via `gh`.                                                                          |
+| `LOG_LEVEL`         | `silent`, `error`, `info` (default), or `debug`. At `debug`, the spawned `flue run` output is passed through live; at `info`, only a one-line per-event summary is shown. |
 
 Then:
 

@@ -14,13 +14,27 @@ const USERNAME = process.env.GITHUB_USERNAME;
 const GH_TOKEN = process.env.GH_TOKEN;
 const POST_COMMENTS = process.env.POST_COMMENTS === 'true';
 
+const LOG_LEVELS = { silent: 0, error: 1, info: 2, debug: 3 };
+const LOG_LEVEL_NAME = (process.env.LOG_LEVEL ?? 'info').toLowerCase();
+const LOG_LEVEL = LOG_LEVELS[LOG_LEVEL_NAME] ?? LOG_LEVELS.info;
+
+const ts = () => new Date().toISOString();
+const log = {
+  error: (msg) => { if (LOG_LEVEL >= LOG_LEVELS.error) console.error(`[${ts()}] ERROR ${msg}`); },
+  info:  (msg) => { if (LOG_LEVEL >= LOG_LEVELS.info)  console.log(`[${ts()}] INFO  ${msg}`); },
+  debug: (msg) => { if (LOG_LEVEL >= LOG_LEVELS.debug) console.log(`[${ts()}] DEBUG ${msg}`); },
+};
+
 if (!USERNAME) {
-  console.error('GITHUB_USERNAME is required (set it in .env or your shell).');
+  log.error('GITHUB_USERNAME is required (set it in .env or your shell).');
   process.exit(1);
 }
 if (!process.env.ANTHROPIC_API_KEY) {
-  console.error('ANTHROPIC_API_KEY is required.');
+  log.error('ANTHROPIC_API_KEY is required.');
   process.exit(1);
+}
+if (!(LOG_LEVEL_NAME in LOG_LEVELS)) {
+  log.error(`unknown LOG_LEVEL "${LOG_LEVEL_NAME}". Valid: ${Object.keys(LOG_LEVELS).join(', ')}. Falling back to info.`);
 }
 
 async function loadState() {
@@ -89,22 +103,30 @@ function makeKey(kind, repo, id) {
 async function runAgentForEvent(event) {
   return new Promise((resolve, reject) => {
     const id = `pr-watcher-${event.kind}-${event.repo.replace('/', '_')}-${event.pr}`;
+    const passthrough = LOG_LEVEL >= LOG_LEVELS.debug;
     const child = spawn(
       'npx',
       ['flue', 'run', 'watch', '--target', 'node', '--id', id, '--payload', JSON.stringify(event)],
       {
         cwd: projectRoot,
         env: { ...process.env, POST_COMMENTS: POST_COMMENTS ? 'true' : 'false' },
-        stdio: ['ignore', 'pipe', 'inherit'],
+        stdio: ['ignore', 'pipe', passthrough ? 'inherit' : 'pipe'],
       },
     );
     let stdout = '';
+    let stderr = '';
     child.stdout.on('data', (d) => {
-      process.stdout.write(d);
+      if (passthrough) process.stdout.write(d);
       stdout += d;
     });
+    if (!passthrough && child.stderr) {
+      child.stderr.on('data', (d) => (stderr += d));
+    }
     child.on('close', (code) => {
-      if (code !== 0) return reject(new Error(`flue run exited ${code}`));
+      if (code !== 0) {
+        const detail = passthrough ? '' : `\n--- flue stderr ---\n${stderr}`;
+        return reject(new Error(`flue run exited ${code}${detail}`));
+      }
       try {
         resolve(JSON.parse(stdout.trim()));
       } catch (err) {
@@ -115,19 +137,31 @@ async function runAgentForEvent(event) {
   });
 }
 
+function summarizeResult(event, result) {
+  if (!result) return 'no result';
+  const where = `${event.repo}#${event.pr}`;
+  if (result.skipped) return `skipped ${event.kind} ${where} — ${result.reason}`;
+  if (event.kind === 'ci_failure' && result.ciSummary) {
+    return `ci summary for ${where}: ${result.ciSummary}${result.posted ? ' (posted)' : ' (dry-run)'}`;
+  }
+  const draftLen = result.draft ? `${result.draft.length} chars` : 'no draft';
+  return `drafted reply for ${event.kind} ${where} — ${draftLen}, posted=${result.posted}`;
+}
+
 async function tick(state) {
   const prs = await listOpenPRs();
-  console.log(`[${new Date().toISOString()}] scanning ${prs.length} open PR(s) by @${USERNAME}`);
+  log.info(`scanning ${prs.length} open PR(s) by @${USERNAME}`);
 
   const events = [];
 
   for (const pr of prs) {
     const repo = `${pr.repository.nameWithOwner}`;
     const detail = await fetchPRDetail(repo, pr.number).catch((err) => {
-      console.error(`  failed to fetch ${repo}#${pr.number}: ${err.message}`);
+      log.error(`failed to fetch ${repo}#${pr.number}: ${err.message}`);
       return null;
     });
     if (!detail) continue;
+    log.debug(`${repo}#${pr.number}: ${detail.comments.length} issue comments, ${detail.reviewComments.length} review comments`);
 
     for (const c of detail.comments) {
       const key = makeKey('issue_comment', repo, c.id);
@@ -181,16 +215,17 @@ async function tick(state) {
     }
   }
 
-  console.log(`  ${events.length} new event(s) to process`);
+  log.info(`${events.length} new event(s) to process`);
 
   for (const event of events) {
     const key = makeKey(event.kind, event.repo, event.commentId ?? event.checkRunId);
-    console.log(`  -> ${event.kind} ${event.repo}#${event.pr}`);
+    log.info(`-> ${event.kind} ${event.repo}#${event.pr}`);
     try {
       const result = await runAgentForEvent(event);
+      log.info(summarizeResult(event, result));
       state.handled[key] = { at: Date.now(), result: result?.reason ?? 'ok' };
     } catch (err) {
-      console.error(`  agent failed: ${err.message}`);
+      log.error(`agent failed for ${event.kind} ${event.repo}#${event.pr}: ${err.message}`);
     }
     await saveState(state);
   }
@@ -202,14 +237,14 @@ async function tick(state) {
 async function main() {
   await mkdir(dirname(STATE_PATH), { recursive: true });
   const state = await loadState();
-  console.log(`pr-watcher started. polling every ${POLL_MS / 1000}s. POST_COMMENTS=${POST_COMMENTS}`);
+  log.info(`pr-watcher started. polling every ${POLL_MS / 1000}s. POST_COMMENTS=${POST_COMMENTS} LOG_LEVEL=${LOG_LEVEL_NAME}`);
 
   while (true) {
     const start = Date.now();
     try {
       await tick(state);
     } catch (err) {
-      console.error(`tick failed: ${err.message}`);
+      log.error(`tick failed: ${err.message}`);
     }
     const elapsed = Date.now() - start;
     const wait = Math.max(0, POLL_MS - elapsed);
@@ -218,6 +253,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err);
+  log.error(err.stack ?? err.message ?? String(err));
   process.exit(1);
 });
