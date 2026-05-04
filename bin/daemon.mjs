@@ -10,7 +10,7 @@ import {
   buildEventsForPR, buildMergeEventForPR, buildCIEventsForPR,
 } from '../lib/github-events.mjs';
 import { runAgentForEvent, summarizeResult } from '../lib/agent-runner.mjs';
-import { detectPaneHost, reconcileDelegated } from '../lib/pane-delegation.mjs';
+import { detectPaneHost, reconcileDelegated, delegateToPane } from '../lib/pane-delegation.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
@@ -66,6 +66,35 @@ async function tick() {
   for (const event of fresh) {
     const key = eventKey(event);
     log.info(`-> ${event.kind} ${event.repo}#${event.pr}`);
+
+    const wantsGitWork = event.kind === 'branch_behind' || event.kind === 'merge_conflict';
+    const flag = event.kind === 'branch_behind' ? 'AUTO_REBASE' : 'RESOLVE_CONFLICTS';
+    const flagOn = wantsGitWork && process.env[flag] === 'true';
+    const host = wantsGitWork && flagOn ? detectPaneHost() : null;
+
+    if (host) {
+      try {
+        const { worktreeDir } = await delegateToPane({
+          projectRoot, gh, event, host, postComments: POST_COMMENTS,
+        });
+        log.info(`delegated ${event.kind} ${event.repo}#${event.pr} to ${host} pane (${worktreeDir})`);
+        store.markDelegated(key, {
+          kind: event.kind, repo: event.repo, pr: event.pr,
+          data: {
+            host,
+            worktreeDir,
+            headRefName: event.headRefName,
+            headSha: event.headSha,
+            baseRefName: event.baseRefName,
+            baseSha: event.baseSha,
+          },
+        });
+      } catch (err) {
+        log.error(`pane delegation failed for ${event.kind} ${event.repo}#${event.pr}: ${err.message}`);
+      }
+      continue;
+    }
+
     try {
       const result = await runAgentForEvent(event, { projectRoot, postComments: POST_COMMENTS });
       log.info(summarizeResult(event, result));
