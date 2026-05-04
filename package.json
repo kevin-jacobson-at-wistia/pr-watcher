@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node bin/daemon.mjs",
-    "scan-once": "npx flue run watch --target node --id pr-watcher --payload '{\"mode\":\"scan\"}'"
+    "start": "node --env-file-if-exists=.env bin/daemon.mjs",
+    "scan-once": "npx flue run watch --target node --id pr-watcher --env .env --payload '{\"mode\":\"scan\"}'"
   },
   "dependencies": {
     "@flue/sdk": "latest",
