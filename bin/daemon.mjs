@@ -127,8 +127,13 @@ async function runAgentForEvent(event) {
         const detail = passthrough ? '' : `\n--- flue stderr ---\n${stderr}`;
         return reject(new Error(`flue run exited ${code}${detail}`));
       }
+      const jsonOnly = stdout
+        .split('\n')
+        .filter((line) => !line.startsWith('[flue] '))
+        .join('\n')
+        .trim();
       try {
-        resolve(JSON.parse(stdout.trim()));
+        resolve(JSON.parse(jsonOnly));
       } catch (err) {
         reject(new Error(`could not parse flue stdout as JSON: ${err.message}\nraw stdout was:\n${stdout}`));
       }
