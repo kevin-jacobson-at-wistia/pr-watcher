@@ -1,0 +1,17 @@
+{
+  "name": "pr-watcher",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node bin/daemon.mjs",
+    "scan-once": "npx flue run watch --target node --id pr-watcher --payload '{\"mode\":\"scan\"}'"
+  },
+  "dependencies": {
+    "@flue/sdk": "latest",
+    "valibot": "latest"
+  },
+  "devDependencies": {
+    "@flue/cli": "latest"
+  }
+}
