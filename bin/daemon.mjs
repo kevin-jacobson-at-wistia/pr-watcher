@@ -61,23 +61,17 @@ async function listOpenPRs() {
     '--author', USERNAME,
     '--state', 'open',
     '--limit', '50',
-    '--json', 'repository,number,title,updatedAt,headRefOid',
+    '--json', 'repository,number,title,updatedAt',
   ]);
 }
 
 async function fetchPRDetail(repo, pr) {
-  const comments = await gh([
-    'api', `repos/${repo}/issues/${pr}/comments`, '--paginate',
+  const [head, comments, reviewComments] = await Promise.all([
+    gh(['pr', 'view', String(pr), '--repo', repo, '--json', 'headRefOid']),
+    gh(['api', `repos/${repo}/issues/${pr}/comments`, '--paginate']),
+    gh(['api', `repos/${repo}/pulls/${pr}/comments`, '--paginate']),
   ]);
-  const reviewComments = await gh([
-    'api', `repos/${repo}/pulls/${pr}/comments`, '--paginate',
-  ]);
-  const checks = await gh([
-    'api', `repos/${repo}/commits/HEAD/check-runs`,
-    '--method', 'GET',
-    '-H', 'Accept: application/vnd.github+json',
-  ]).catch(() => ({ check_runs: [] }));
-  return { comments, reviewComments, checkRuns: checks.check_runs ?? [] };
+  return { headRefOid: head.headRefOid, comments, reviewComments };
 }
 
 async function fetchChecksForSha(repo, sha) {
@@ -172,7 +166,7 @@ async function tick(state) {
       });
     }
 
-    const checks = await fetchChecksForSha(repo, pr.headRefOid);
+    const checks = await fetchChecksForSha(repo, detail.headRefOid);
     for (const cr of checks) {
       if (cr.conclusion !== 'failure') continue;
       const key = makeKey('ci_failure', repo, cr.id);
@@ -183,7 +177,7 @@ async function tick(state) {
         pr: pr.number,
         checkRunId: cr.id,
         checkName: cr.name,
-        headSha: pr.headRefOid,
+        headSha: detail.headRefOid,
       });
     }
   }
