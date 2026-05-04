@@ -74,7 +74,7 @@ Anyone can clone this repo, set their own `GITHUB_USERNAME`, and they're off —
 To change behavior:
 
 - `AGENTS.md` — top-level system prompt: scope, attribution rule, posting policy, tone.
-- `agents/skills/triage-pr-activity/SKILL.md` — the per-event triage workflow.
+- `.agents/skills/triage-pr-activity/SKILL.md` — the per-event triage workflow (runtime-loaded; dot prefix is required by Flue's sandbox).
 - `roles/pr-assistant.md` — assistant persona applied to each call.
 - `agents/watch.ts` — wiring (model, sandbox, schema). Change the model id here.
 
