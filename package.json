@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --env-file-if-exists=.env bin/daemon.mjs",
+    "start": "node --env-file-if-exists=.env --experimental-sqlite bin/daemon.mjs",
     "scan-once": "npx flue run watch --target node --id pr-watcher --env .env --payload '{\"mode\":\"scan\"}'"
   },
   "dependencies": {
