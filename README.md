@@ -86,6 +86,8 @@ git/
 
 The `git/` dir is gitignored. Persistent clones survive across runs so subsequent rebases on the same repo are fast (just `git fetch`). Worktrees are torn down on every attempt — even on failure — so a stuck rebase never blocks the next one.
 
+**Reuse of nearby clones**: Before cloning into `git/<slug>/main`, the daemon checks for an existing clone at `../<name>`, `../../<owner>/<name>`, or `../../<name>` (relative to `pr-watcher/`). If found AND its `origin` remote matches the target repo, that clone is reused as the worktree base — no extra disk, no extra clone time. Worktrees still go to `git/<slug>/wt-pr-<num>-<shortsha>/`. The reuse does run `git fetch` against your existing clone, which is non-destructive but will populate new remote-tracking refs.
+
 Force-pushes always use `--force-with-lease=<headRef>:<expected-sha>`, so a push fails fast if you've pushed new commits to that branch since the agent started its rebase.
 
 Requires `gh auth setup-git` to be configured so `git` over HTTPS uses your gh credentials.
