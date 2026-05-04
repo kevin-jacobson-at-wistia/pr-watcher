@@ -70,6 +70,7 @@ const TriageResultSchema = v.object({
   draft: v.nullable(v.string()),
   posted: v.boolean(),
   ciSummary: v.nullable(v.string()),
+  relatedToChanges: v.optional(v.nullable(v.boolean()), null),
 });
 
 const ResolveResultSchema = v.object({

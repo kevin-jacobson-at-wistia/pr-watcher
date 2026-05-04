@@ -42,6 +42,7 @@ async function tick() {
   log.info(`scanning ${prs.length} open PR(s) by @${USERNAME}`);
 
   const events = [];
+  const detailByPr = new Map();
   for (const pr of prs) {
     const repo = pr.repository.nameWithOwner;
     const detail = await fetchPRDetail(gh, repo, pr.number).catch((err) => {
@@ -49,6 +50,7 @@ async function tick() {
       return null;
     });
     if (!detail) continue;
+    detailByPr.set(`${repo}:${pr.number}`, detail);
     log.debug(`${repo}#${pr.number}: ${detail.comments.length} issue comments, ${detail.reviewComments.length} review comments`);
 
     events.push(...buildEventsForPR({ repo, pr, detail, store, username: USERNAME }));
@@ -99,12 +101,83 @@ async function tick() {
       const result = await runAgentForEvent(event, { projectRoot, postComments: POST_COMMENTS });
       log.info(summarizeResult(event, result));
       store.markHandled(key, { kind: event.kind, repo: event.repo, pr: event.pr, data: { result } });
+
+      if (event.kind === 'ci_failure' && result?.relatedToChanges === false) {
+        await maybeFollowUpWithRebase({
+          repo: event.repo,
+          pr: event.pr,
+          detail: detailByPr.get(`${event.repo}:${event.pr}`),
+        });
+      }
     } catch (err) {
       log.error(`agent failed for ${event.kind} ${event.repo}#${event.pr}: ${err.message}`);
     }
   }
 
   store.setLastScan(new Date().toISOString());
+}
+
+async function maybeFollowUpWithRebase({ repo, pr, detail }) {
+  if (process.env.AUTO_REBASE !== 'true') {
+    log.info(`${repo}#${pr}: ci failure judged unrelated to PR changes, but AUTO_REBASE is not enabled — no follow-up rebase`);
+    return;
+  }
+  if (!detail) {
+    log.debug(`${repo}#${pr}: no PR detail available for follow-up rebase`);
+    return;
+  }
+  if (detail.mergeStateStatus !== 'BEHIND') {
+    log.info(`${repo}#${pr}: ci failure judged unrelated, but PR is ${detail.mergeStateStatus} — no rebase to attempt`);
+    return;
+  }
+  const rebaseEvent = {
+    kind: 'branch_behind',
+    repo,
+    pr,
+    headRefName: detail.headRefName,
+    headSha: detail.headRefOid,
+    baseRefName: detail.baseRefName,
+    baseSha: detail.baseRefOid,
+  };
+  const rebaseKey = eventKey(rebaseEvent);
+  if (store.isKnown(rebaseKey)) {
+    log.debug(`${repo}#${pr}: follow-up rebase already known (${rebaseKey})`);
+    return;
+  }
+  const host = detectPaneHost();
+  if (host) {
+    try {
+      const { worktreeDir } = await delegateToPane({
+        projectRoot, gh, event: rebaseEvent, host, postComments: POST_COMMENTS,
+      });
+      log.info(`${repo}#${pr}: ci failure unrelated -> delegated rebase to ${host} pane (${worktreeDir})`);
+      store.markDelegated(rebaseKey, {
+        kind: rebaseEvent.kind, repo, pr,
+        data: {
+          host,
+          worktreeDir,
+          headRefName: rebaseEvent.headRefName,
+          headSha: rebaseEvent.headSha,
+          baseRefName: rebaseEvent.baseRefName,
+          baseSha: rebaseEvent.baseSha,
+          triggeredBy: 'ci_failure_unrelated',
+        },
+      });
+    } catch (err) {
+      log.error(`${repo}#${pr}: follow-up rebase pane delegation failed: ${err.message}`);
+    }
+    return;
+  }
+  try {
+    const result = await runAgentForEvent(rebaseEvent, { projectRoot, postComments: POST_COMMENTS });
+    log.info(`${repo}#${pr}: ci failure unrelated -> ${summarizeResult(rebaseEvent, result)}`);
+    store.markHandled(rebaseKey, {
+      kind: rebaseEvent.kind, repo, pr,
+      data: { result, triggeredBy: 'ci_failure_unrelated' },
+    });
+  } catch (err) {
+    log.error(`${repo}#${pr}: follow-up rebase agent failed: ${err.message}`);
+  }
 }
 
 async function main() {
