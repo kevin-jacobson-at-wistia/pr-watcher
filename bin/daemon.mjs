@@ -118,8 +118,8 @@ async function tick() {
 }
 
 async function maybeFollowUpWithRebase({ repo, pr, detail }) {
-  if (process.env.AUTO_REBASE !== 'true') {
-    log.info(`${repo}#${pr}: ci failure judged unrelated to PR changes, but AUTO_REBASE is not enabled — no follow-up rebase`);
+  if (process.env.REBASE_ON_CI_NOISE !== 'true') {
+    log.debug(`${repo}#${pr}: ci failure judged unrelated, but REBASE_ON_CI_NOISE is not enabled — no follow-up rebase`);
     return;
   }
   if (!detail) {
@@ -169,7 +169,13 @@ async function maybeFollowUpWithRebase({ repo, pr, detail }) {
     return;
   }
   try {
-    const result = await runAgentForEvent(rebaseEvent, { projectRoot, postComments: POST_COMMENTS });
+    // REBASE_ON_CI_NOISE authorizes this specific rebase, so override AUTO_REBASE
+    // for the spawned subprocess (agents/watch.ts gates branch_behind on AUTO_REBASE).
+    const result = await runAgentForEvent(rebaseEvent, {
+      projectRoot,
+      postComments: POST_COMMENTS,
+      extraEnv: { AUTO_REBASE: 'true' },
+    });
     log.info(`${repo}#${pr}: ci failure unrelated -> ${summarizeResult(rebaseEvent, result)}`);
     store.markHandled(rebaseKey, {
       kind: rebaseEvent.kind, repo, pr,
@@ -186,6 +192,7 @@ async function main() {
     `POST_COMMENTS=${POST_COMMENTS} ` +
     `AUTO_REBASE=${process.env.AUTO_REBASE === 'true'} ` +
     `RESOLVE_CONFLICTS=${process.env.RESOLVE_CONFLICTS === 'true'} ` +
+    `REBASE_ON_CI_NOISE=${process.env.REBASE_ON_CI_NOISE === 'true'} ` +
     `OPEN_IN_PANE=${process.env.OPEN_IN_PANE ?? 'auto'} (host=${detectPaneHost() ?? 'none'}) ` +
     `LOG_LEVEL=${logLevelName}`
   );
