@@ -106,10 +106,9 @@ async function runAgentForEvent(event) {
     child.on('close', (code) => {
       if (code !== 0) return reject(new Error(`flue run exited ${code}`));
       try {
-        const lines = stdout.trim().split('\n');
-        resolve(JSON.parse(lines[lines.length - 1]));
+        resolve(JSON.parse(stdout.trim()));
       } catch (err) {
-        reject(err);
+        reject(new Error(`could not parse flue stdout as JSON: ${err.message}\nraw stdout was:\n${stdout}`));
       }
     });
     child.on('error', reject);
