@@ -1,14 +1,12 @@
 # pr-watcher
 
-Hello boss! 👋
-
 A small [Flue](https://flueframework.com/) agent + Node daemon that watches your open GitHub PRs and reacts to:
 
 - **CI failures** — summarizes the failing check and (optionally) drafts a comment with the root cause.
 - **Issue comments** on your PRs — drafts a reply when the comment warrants one.
 - **PR review comments** (inline) — same triage as above.
 
-Every reply posted on your behalf is prefixed with a collapsed `🤖 Posted by Claude` attribution block so everyboss on the thread can immediately tell the comment isn't from you, boss.
+Every reply posted on your behalf is prefixed with a collapsed `🤖 Posted by Claude` attribution block so anyone on the thread can immediately tell the comment isn't from you.
 
 ## How it works
 
@@ -32,7 +30,7 @@ Every reply posted on your behalf is prefixed with a collapsed `🤖 Posted by C
 
 The daemon does only cheap GitHub API polling. The LLM is only invoked when there's actually new activity, so quiet days cost ~nothing.
 
-## Setup, boss
+## Setup
 
 Requires Node 22+, `gh` CLI authenticated separately for your shell, and an Anthropic API key.
 
@@ -61,17 +59,17 @@ npm start
 
 Leave it running in a terminal. First scan happens immediately, then every `POLL_INTERVAL_SEC`.
 
-## Dry-run first, boss
+## Dry-run first
 
-Start with `POST_COMMENTS=false` (the default). The daemon will log the drafted replies for each event so you can audit the judgment before anything goes out. Once you trust it, flip `POST_COMMENTS=true` and restart.
+Start with `POST_COMMENTS=false` (the default). The daemon will log the drafted replies for each event so you can audit the agent's judgment. Once you trust it, flip `POST_COMMENTS=true` and restart.
 
 ## State
 
 The daemon writes `state.json` next to itself with the IDs of every comment/check it has already processed. Delete the file to re-process everything from scratch.
 
-## For everyboss
+## Customizing
 
-Anyboss on your crew can clone this repo, set their own `GITHUB_USERNAME`, and they're off — nothing in the agent's prompt or skill is hardcoded to a specific operator. Everyboss gets their own watcher scanning their own PRs.
+Anyone can clone this repo, set their own `GITHUB_USERNAME`, and they're off — nothing in the agent's prompt or skill is hardcoded to a specific operator.
 
 To change behavior:
 
@@ -82,7 +80,7 @@ To change behavior:
 
 ## Running just one event manually
 
-Useful for debugging a specific PR without waiting for the daemon, boss:
+Useful for debugging a specific PR without waiting for the daemon:
 
 ```bash
 npx flue run watch --target node --id manual-test \

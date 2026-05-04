@@ -15,11 +15,11 @@ const GH_TOKEN = process.env.GH_TOKEN;
 const POST_COMMENTS = process.env.POST_COMMENTS === 'true';
 
 if (!USERNAME) {
-  console.error('hey boss — GITHUB_USERNAME is required (set it in .env or your shell).');
+  console.error('GITHUB_USERNAME is required (set it in .env or your shell).');
   process.exit(1);
 }
 if (!process.env.ANTHROPIC_API_KEY) {
-  console.error('hey boss — ANTHROPIC_API_KEY is required.');
+  console.error('ANTHROPIC_API_KEY is required.');
   process.exit(1);
 }
 
@@ -124,7 +124,7 @@ async function runAgentForEvent(event) {
 
 async function tick(state) {
   const prs = await listOpenPRs();
-  console.log(`[${new Date().toISOString()}] checking on ${prs.length} open PR(s) for boss (@${USERNAME})`);
+  console.log(`[${new Date().toISOString()}] scanning ${prs.length} open PR(s) by @${USERNAME}`);
 
   const events = [];
 
@@ -188,7 +188,7 @@ async function tick(state) {
     }
   }
 
-  console.log(`  ${events.length} new thing(s) for boss to know about`);
+  console.log(`  ${events.length} new event(s) to process`);
 
   for (const event of events) {
     const key = makeKey(event.kind, event.repo, event.commentId ?? event.checkRunId);
@@ -209,7 +209,7 @@ async function tick(state) {
 async function main() {
   await mkdir(dirname(STATE_PATH), { recursive: true });
   const state = await loadState();
-  console.log(`hello boss! pr-watcher is up. polling every ${POLL_MS / 1000}s. POST_COMMENTS=${POST_COMMENTS}`);
+  console.log(`pr-watcher started. polling every ${POLL_MS / 1000}s. POST_COMMENTS=${POST_COMMENTS}`);
 
   while (true) {
     const start = Date.now();
