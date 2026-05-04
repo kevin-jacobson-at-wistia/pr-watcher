@@ -58,10 +58,22 @@ const ConflictEventSchema = v.object({
   baseSha: v.string(),
 });
 
+const ShortcutStoryEventSchema = v.object({
+  kind: v.literal("shortcut_story"),
+  storyId: v.number(),
+  storyName: v.string(),
+  storyType: v.optional(v.string(), "feature"),
+  appUrl: v.string(),
+  iterationId: v.number(),
+  iterationName: v.string(),
+  workflowStateId: v.number(),
+});
+
 const EventSchema = v.union([
   TriageEventSchema,
   RebaseEventSchema,
   ConflictEventSchema,
+  ShortcutStoryEventSchema,
 ]);
 
 const TriageResultSchema = v.object({
@@ -92,6 +104,20 @@ const ResolveResultSchema = v.object({
 
 export default async function ({ init, payload }: FlueContext) {
   const event = v.parse(EventSchema, payload);
+
+  // shortcut_story events are only meaningful in a fresh Claude Code pane —
+  // the daemon routes them via pane delegation and never falls through here.
+  // If we somehow get one (e.g. manual `flue run` invocation), no-op cleanly.
+  if (event.kind === "shortcut_story") {
+    return {
+      skipped: true,
+      reason: `shortcut_story sc-${event.storyId} cannot be handled in-process; needs OPEN_IN_PANE host with WORK_ON_STORIES=true`,
+      draft: null,
+      posted: false,
+      ciSummary: null,
+      relatedToChanges: null,
+    };
+  }
 
   const agent = await init({
     sandbox: "local",

@@ -11,6 +11,8 @@ import {
 } from '../lib/github-events.mjs';
 import { runAgentForEvent, summarizeResult } from '../lib/agent-runner.mjs';
 import { detectPaneHost, reconcileDelegated, delegateToPane } from '../lib/pane-delegation.mjs';
+import { makeShortcut } from '../lib/shortcut-client.mjs';
+import { buildShortcutEvents } from '../lib/shortcut-events.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
@@ -19,6 +21,9 @@ const STATE_PATH = join(projectRoot, 'state.sqlite');
 const POLL_MS = (Number(process.env.POLL_INTERVAL_SEC) || 120) * 1000;
 const USERNAME = process.env.GITHUB_USERNAME;
 const POST_COMMENTS = process.env.POST_COMMENTS === 'true';
+const WORK_ON_STORIES = process.env.WORK_ON_STORIES === 'true';
+const STORY_TARGET_REPO = process.env.STORY_TARGET_REPO || 'wistia/wistia';
+const STORY_BASE_REF = process.env.STORY_BASE_REF || 'main';
 
 if (!USERNAME) {
   log.error('GITHUB_USERNAME is required (set it in .env or your shell).');
@@ -33,6 +38,7 @@ if (!logLevelIsKnown) {
 }
 
 const gh = makeGh({ ghToken: process.env.GH_TOKEN });
+const shortcut = makeShortcut();
 const store = new Store(STATE_PATH);
 
 async function tick() {
@@ -61,39 +67,80 @@ async function tick() {
     events.push(...buildCIEventsForPR({ repo, pr, detail, checks }));
   }
 
+  // Only poll Shortcut when work-on-stories is actually enabled. Otherwise
+  // we'd persist `shortcut_story:<id>` state rows the moment any story
+  // appears in Ready, and they'd stay marked-handled forever once enabled.
+  if (shortcut && WORK_ON_STORIES) {
+    try {
+      const storyEvents = await buildShortcutEvents({ shortcut, log });
+      log.info(`shortcut: ${storyEvents.length} ready story(s) owned by current user`);
+      events.push(...storyEvents);
+    } catch (err) {
+      log.error(`shortcut poll failed: ${err.message}`);
+    }
+  } else if (shortcut) {
+    log.debug('shortcut: SHORTCUT_API_TOKEN set but WORK_ON_STORIES=false — skipping poll');
+  }
+
   const fresh = events.filter((e) => !store.isKnown(eventKey(e)));
   sortByPriority(fresh);
   log.info(`${fresh.length} new event(s) to process`);
 
   for (const event of fresh) {
     const key = eventKey(event);
-    log.info(`-> ${event.kind} ${event.repo}#${event.pr}`);
+    const where = event.kind === 'shortcut_story'
+      ? `sc-${event.storyId}`
+      : `${event.repo}#${event.pr}`;
+    log.info(`-> ${event.kind} ${where}`);
 
-    const wantsGitWork = event.kind === 'branch_behind' || event.kind === 'merge_conflict';
-    const flag = event.kind === 'branch_behind' ? 'AUTO_REBASE' : 'RESOLVE_CONFLICTS';
-    const flagOn = wantsGitWork && process.env[flag] === 'true';
+    const isStory = event.kind === 'shortcut_story';
+    const wantsGitWork = event.kind === 'branch_behind' || event.kind === 'merge_conflict' || isStory;
+    let flagOn = false;
+    if (isStory) flagOn = WORK_ON_STORIES;
+    else if (event.kind === 'branch_behind') flagOn = process.env.AUTO_REBASE === 'true';
+    else if (event.kind === 'merge_conflict') flagOn = process.env.RESOLVE_CONFLICTS === 'true';
     const host = wantsGitWork && flagOn ? detectPaneHost() : null;
 
     if (host) {
       try {
+        const repoForEvent = isStory ? STORY_TARGET_REPO : event.repo;
         const { worktreeDir } = await delegateToPane({
           projectRoot, gh, event, host, postComments: POST_COMMENTS,
+          repo: isStory ? STORY_TARGET_REPO : undefined,
+          baseRef: isStory ? STORY_BASE_REF : undefined,
         });
-        log.info(`delegated ${event.kind} ${event.repo}#${event.pr} to ${host} pane (${worktreeDir})`);
+        log.info(`delegated ${event.kind} ${where} to ${host} pane (${worktreeDir})`);
         store.markDelegated(key, {
-          kind: event.kind, repo: event.repo, pr: event.pr,
-          data: {
-            host,
-            worktreeDir,
-            headRefName: event.headRefName,
-            headSha: event.headSha,
-            baseRefName: event.baseRefName,
-            baseSha: event.baseSha,
-          },
+          kind: event.kind, repo: repoForEvent, pr: isStory ? null : event.pr,
+          data: isStory
+            ? {
+                host,
+                worktreeDir,
+                storyId: event.storyId,
+                storyName: event.storyName,
+                appUrl: event.appUrl,
+                baseRef: STORY_BASE_REF,
+              }
+            : {
+                host,
+                worktreeDir,
+                headRefName: event.headRefName,
+                headSha: event.headSha,
+                baseRefName: event.baseRefName,
+                baseSha: event.baseSha,
+              },
         });
       } catch (err) {
-        log.error(`pane delegation failed for ${event.kind} ${event.repo}#${event.pr}: ${err.message}`);
+        log.error(`pane delegation failed for ${event.kind} ${where}: ${err.message}`);
       }
+      continue;
+    }
+
+    if (isStory) {
+      // No pane host available — story implementation only happens in a fresh
+      // Claude pane. Don't markHandled (would lock the story out forever once
+      // the user adds a pane host); just log and re-evaluate next tick.
+      log.info(`shortcut_story sc-${event.storyId}: no pane host available — set OPEN_IN_PANE=tmux|iterm or run inside tmux`);
       continue;
     }
 
@@ -110,7 +157,7 @@ async function tick() {
         });
       }
     } catch (err) {
-      log.error(`agent failed for ${event.kind} ${event.repo}#${event.pr}: ${err.message}`);
+      log.error(`agent failed for ${event.kind} ${where}: ${err.message}`);
     }
   }
 
@@ -193,6 +240,9 @@ async function main() {
     `AUTO_REBASE=${process.env.AUTO_REBASE === 'true'} ` +
     `RESOLVE_CONFLICTS=${process.env.RESOLVE_CONFLICTS === 'true'} ` +
     `REBASE_ON_CI_NOISE=${process.env.REBASE_ON_CI_NOISE === 'true'} ` +
+    `WORK_ON_STORIES=${WORK_ON_STORIES} ` +
+    `SHORTCUT=${shortcut ? 'on' : 'off'} ` +
+    (WORK_ON_STORIES ? `STORY_TARGET_REPO=${STORY_TARGET_REPO} STORY_BASE_REF=${STORY_BASE_REF} ` : ``) +
     `OPEN_IN_PANE=${process.env.OPEN_IN_PANE ?? 'auto'} (host=${detectPaneHost() ?? 'none'}) ` +
     `LOG_LEVEL=${logLevelName}`
   );

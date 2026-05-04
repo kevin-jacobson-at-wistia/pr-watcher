@@ -7,6 +7,7 @@ A small [Flue](https://flueframework.com/) agent + Node daemon that watches your
 - **PR review comments** (inline) — same triage as above.
 - **Branch behind base** (no conflicts) — opt-in: rebases your PR onto the base branch and force-pushes with `--force-with-lease`.
 - **Merge conflicts** — opt-in: clones the repo, opens a worktree, attempts to resolve each conflicted file, runs a quick typecheck/test if available, and force-pushes with `--force-with-lease` only when resolution is high-confidence.
+- **Shortcut "Ready" stories owned by you** — opt-in: when `SHORTCUT_API_TOKEN` and `WORK_ON_STORIES=true` are set, polls Shortcut for stories in any of your teams' active iterations that are in the "Ready" state and assigned to you. For each new match the daemon sets up a worktree of `STORY_TARGET_REPO` (default `wistia/wistia`) at `origin/<STORY_BASE_REF>` and spawns `claude --dangerously-skip-permissions` in a tmux split / iTerm tab. The spawned session is told to use the operator's `shortcut-to-pr` skill (or fall back to a self-contained workflow) — including evaluating whether to stack on an existing open PR before settling on the base branch.
 
 Every reply posted on your behalf is prefixed with a collapsed `🤖 Posted by Claude` attribution block so anyone on the thread can immediately tell the comment isn't from you.
 
@@ -56,7 +57,11 @@ Edit `.env`:
 | `AUTO_REBASE`       | `false` (default) or `true`. When `true` and a PR is BEHIND its base with no conflicts, the agent rebases and force-pushes with `--force-with-lease`. The pane prompt is stack-aware: if the PR is stacked on another open PR by the operator and the parent is BEHIND, the rebase walks up the chain and updates parents top-down before rebasing this PR.                                                          |
 | `RESOLVE_CONFLICTS` | `false` (default) or `true`. When `true` and a PR is DIRTY, the agent attempts to resolve each conflicted file, runs a quick typecheck if available, and force-pushes only on high-confidence resolution. Bails (no push) when intent is ambiguous.                                                                                                                   |
 | `REBASE_ON_CI_NOISE` | `false` (default) or `true`. When `true` and a CI failure is judged by the triage agent to be unrelated to the PR's diff (pre-existing flake, unrelated test bleed, environmental, etc.) AND the PR is BEHIND, synthesizes a `branch_behind` follow-up to land newer base commits and re-trigger CI. Independent of `AUTO_REBASE` — set this on its own if you want rebases only as ci-noise recovery and not on every BEHIND PR.                                                                                       |
-| `OPEN_IN_PANE`      | `auto` (default), `tmux`, `iterm`, or `never`. When a `branch_behind` / `merge_conflict` event fires (with the matching flag enabled) AND a pane host is available, the daemon sets up the worktree on the host and spawns `claude --dangerously-skip-permissions` in a new tmux split or iTerm tab. Falls back to the in-process Flue agent if no host is available. |
+| `OPEN_IN_PANE`      | `auto` (default), `tmux`, `iterm`, or `never`. When a `branch_behind` / `merge_conflict` / `shortcut_story` event fires (with the matching flag enabled) AND a pane host is available, the daemon sets up the worktree on the host and spawns `claude --dangerously-skip-permissions` in a new tmux split or iTerm tab. For PR git events, falls back to the in-process Flue agent if no host is available; for story events the daemon skips with a log line (story implementation only happens in a pane). |
+| `SHORTCUT_API_TOKEN` | Optional. Personal API token from https://app.shortcut.com/settings/account/api-tokens. When set, the daemon also polls Shortcut for stories owned by the current member that sit in a "Ready" workflow state inside an active iteration. Without this, Shortcut polling is disabled entirely. |
+| `WORK_ON_STORIES`    | `false` (default) or `true`. When `true` and a `shortcut_story` event fires AND a pane host is available (`OPEN_IN_PANE`), the daemon sets up a worktree of `STORY_TARGET_REPO` and spawns Claude Code to take the story from "Ready" to a shipped PR (using the operator's `shortcut-to-pr` skill if installed). Without this, story matches are logged and marked handled but no agent is spawned. |
+| `STORY_TARGET_REPO`  | Default `wistia/wistia`. The `<owner>/<name>` repo to clone/worktree for Shortcut story work. The clone is reused if there's a sibling clone of this repo near `pr-watcher/` (same logic as `AUTO_REBASE`). |
+| `STORY_BASE_REF`     | Default `main`. The branch to start the story worktree from. The spawned Claude may decide to stack on an existing open PR instead — see "Stacking on existing open PRs" below. |
 
 Then:
 
@@ -97,6 +102,25 @@ To change behavior:
 
 - `.agents/skills/resolve-pr-conflicts/SKILL.md` — the rebase/resolve workflow.
 - `agents/watch.ts` — gating (the `AUTO_REBASE` / `RESOLVE_CONFLICTS` checks live here, not in the skill).
+
+## Shortcut → PR worktree spawn
+
+When `SHORTCUT_API_TOKEN` is set, every poll cycle:
+
+1. Calls `/member` to learn your Shortcut user ID.
+2. Calls `/iterations` and filters to active iterations.
+3. For each active iteration on one of your teams, lists stories and keeps the ones whose `workflow_state_id` maps to a state literally named "Ready" (case-insensitive — works across the Development, Discovery, and Design workflows) AND whose `owner_ids` includes you AND that are not archived.
+4. Each kept story becomes a `shortcut_story` event keyed by story ID — once handled or delegated, the same story won't fire again unless you remove the row from `state.sqlite`.
+
+When `WORK_ON_STORIES=true` and a pane host is available, the spawned Claude is given:
+
+- The story ID, name, type, and Shortcut URL.
+- The worktree path (already populated at `origin/<STORY_BASE_REF>`).
+- Instructions to use the operator's `shortcut-to-pr` skill (if installed) — or a fallback workflow.
+
+### Stacking on existing open PRs
+
+The story prompt explicitly tells the spawned Claude to run `gh pr list --author @me --state open` before settling on the base branch and decide whether the story builds on an unmerged PR (file overlap, same epic, depends on an unmerged model/service/feature flag, etc.). If yes, it branches from `origin/<that-headRefName>` instead of `origin/<STORY_BASE_REF>` and opens the PR with `--base <that-headRefName>`. The same guidance lives in the `shortcut-to-pr` skill at `~/.claude/commands/shortcut-to-pr.md`, so direct `/shortcut-to-pr <ID>` invocations get the same behavior.
 
 ## Customizing
 
