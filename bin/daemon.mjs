@@ -278,6 +278,15 @@ async function tick(state) {
     }
   }
 
+  const priority = {
+    merge_conflict: 0,
+    branch_behind: 1,
+    ci_failure: 2,
+    issue_comment: 3,
+    review_comment: 4,
+  };
+  events.sort((a, b) => (priority[a.kind] ?? 99) - (priority[b.kind] ?? 99));
+
   log.info(`${events.length} new event(s) to process`);
 
   for (const event of events) {
