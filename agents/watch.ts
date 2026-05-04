@@ -98,11 +98,13 @@ export default async function ({ init, payload }: FlueContext) {
   });
   const session = await agent.session();
 
-  if (event.kind === "branch_behind") {
-    if (process.env.AUTO_REBASE !== "true") {
+  if (event.kind === "branch_behind" || event.kind === "merge_conflict") {
+    const flag =
+      event.kind === "branch_behind" ? "AUTO_REBASE" : "RESOLVE_CONFLICTS";
+    if (process.env[flag] !== "true") {
       return {
         skipped: true,
-        reason: `branch_behind detected on ${event.repo}#${event.pr} but AUTO_REBASE is not enabled`,
+        reason: `${event.kind} detected on ${event.repo}#${event.pr} but ${flag} is not enabled`,
         outcome: "no-op",
         pushedSha: null,
         conflictedFiles: [],
@@ -110,28 +112,21 @@ export default async function ({ init, payload }: FlueContext) {
         posted: false,
       };
     }
+    const slug = event.repo.replace("/", "__");
+    const projectRoot = process.cwd();
+    const cloneDir = `${projectRoot}/git/${slug}/main`;
+    const shortSha = event.headSha.slice(0, 8);
+    const worktreeDir = `${projectRoot}/git/${slug}/wt-pr-${event.pr}-${shortSha}`;
     return await session.skill("resolve-pr-conflicts", {
-      args: { ...event, mode: "rebase-only" },
-      role: "pr-assistant",
-      commands: [gh, git],
-      result: ResolveResultSchema,
-    });
-  }
-
-  if (event.kind === "merge_conflict") {
-    if (process.env.RESOLVE_CONFLICTS !== "true") {
-      return {
-        skipped: true,
-        reason: `merge_conflict detected on ${event.repo}#${event.pr} but RESOLVE_CONFLICTS is not enabled`,
-        outcome: "no-op",
-        pushedSha: null,
-        conflictedFiles: [],
-        draft: null,
-        posted: false,
-      };
-    }
-    return await session.skill("resolve-pr-conflicts", {
-      args: { ...event, mode: "resolve-conflicts" },
+      args: {
+        ...event,
+        mode:
+          event.kind === "branch_behind" ? "rebase-only" : "resolve-conflicts",
+        projectRoot,
+        cloneDir,
+        worktreeDir,
+        slug,
+      },
       role: "pr-assistant",
       commands: [gh, git],
       result: ResolveResultSchema,
